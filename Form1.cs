@@ -31,6 +31,7 @@ namespace PauseForms
         {
             public int Interval { get; set; } = int.MaxValue;
             public int Display { get; set; } = 0;
+            public string Text { get; set; } = "";
         }
 
         private NotifyIcon notifyIcon;
@@ -89,7 +90,7 @@ namespace PauseForms
 
             using (var re = new System.IO.StreamReader("Settings.cfg"))
             {
-                var rx = new Regex(@"^([a-z]+)(\d+)=(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
+                var rx = new Regex(@"^([a-z]+)(\d+)=(.+)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
                 var matches = rx.Matches(re.ReadToEnd());
                 if (matches.Count > 0)
@@ -126,6 +127,10 @@ namespace PauseForms
                             timings[index].Display = result;
                         }
                     }
+                    else if (group[1].Value == "text")
+                    {
+                        timings[index].Text = group[3].Value;
+                    }
                 }
             }
         }
@@ -143,6 +148,7 @@ namespace PauseForms
 
         DateTime displayStartTime;
         DateTime displayEndTime;
+        string displayText;
         int totalTime = 0;
         readonly int margin = 100;
 
@@ -163,7 +169,10 @@ namespace PauseForms
             // Update display time if needed
             var newEndTime = DateTime.Now.AddSeconds(maxDisplay);
             if (displayEndTime < newEndTime)
+            {
                 displayEndTime = newEndTime;
+                displayText = toRun.FirstOrDefault(entry => entry.Display == maxDisplay)?.Text;
+            }
 
             // Set and show window
             this.Left = margin;
@@ -205,8 +214,10 @@ namespace PauseForms
         public double CountDown { get; set; }
 
         Font drawFont = new Font(FontFamily.GenericMonospace.Name, 24, FontStyle.Bold);
-        Brush foregroundBrush = new SolidBrush(Color.FromArgb(40,200,60));
+        Brush foregroundBrush = new SolidBrush(Color.FromArgb(40, 200, 60));
         Brush backgroundBrush = new SolidBrush(Color.FromArgb(40, 43, 42));
+        Brush textBrush = new SolidBrush(Color.FromArgb(200, 203, 202));
+        StringFormat stringFormat = new StringFormat() { Alignment = StringAlignment.Far };
         // Draw the progess bar
         private void Form1_Paint(object sender, PaintEventArgs e)
         {
@@ -221,6 +232,10 @@ namespace PauseForms
             {
                 e.Graphics.FillRectangle(foregroundBrush, new RectangleF(1, 1, (float)(remainder / total * w) - 2, h - 2));
                 e.Graphics.DrawString(remainder.ToString("0.0"), drawFont, backgroundBrush, 2, 8);
+            }
+            if (displayText != null)
+            {
+                e.Graphics.DrawString(displayText, drawFont, textBrush, w - 2, 8, stringFormat);
             }
         }
     }
