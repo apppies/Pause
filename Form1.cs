@@ -2,9 +2,11 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -12,6 +14,8 @@ namespace PauseForms
 {
     public partial class Form1 : Form
     {
+        protected override bool ShowWithoutActivation => true;
+
         public Form1()
         {
             InitializeComponent();
@@ -23,40 +27,50 @@ namespace PauseForms
             StartSchedule();
         }
 
-        protected override bool ShowWithoutActivation => true;
+        private class Entry
+        {
+            public int Interval { get; set; } = int.MaxValue;
+            public int Display { get; set; } = 0;
+        }
 
-        private System.Windows.Forms.NotifyIcon notifyIcon1;
-        private System.Windows.Forms.ContextMenu contextMenu1;
-        private System.Windows.Forms.MenuItem menuItem1;
+        private NotifyIcon notifyIcon;
+        private ContextMenu contextMenu;
+        private MenuItem menuItem1;
+        private Icon pauseIcon;
+        private Icon playIcon;
+
         private void LoadTrayIcon()
         {
-            this.contextMenu1 = new System.Windows.Forms.ContextMenu();
-            this.menuItem1 = new System.Windows.Forms.MenuItem();
+            this.contextMenu = new ContextMenu();
+            this.menuItem1 = new MenuItem();
 
             // Initialize contextMenu1
-            this.contextMenu1.MenuItems.AddRange(
-                        new System.Windows.Forms.MenuItem[] { this.menuItem1 });
+            this.contextMenu.MenuItems.AddRange(
+                        new MenuItem[] { this.menuItem1 }
+                        );
 
             // Initialize menuItem1
             this.menuItem1.Index = 0;
             this.menuItem1.Text = "E&xit";
-            this.menuItem1.Click += new System.EventHandler(this.menuItem1_Click);
+            this.menuItem1.Click += new EventHandler(this.menuItem1_Click);
 
             // Create the NotifyIcon.
-            this.notifyIcon1 = new System.Windows.Forms.NotifyIcon(this.components);
+            this.notifyIcon = new NotifyIcon(this.components);
 
             // The Icon property sets the icon that will appear
             // in the systray for this application.
-            notifyIcon1.Icon = new Icon("Play.ico");
+            playIcon = new Icon("Play.ico");
+            pauseIcon = new Icon("Pause.ico");
+            notifyIcon.Icon = playIcon;
 
             // The ContextMenu property sets the menu that will
             // appear when the systray icon is right clicked.
-            notifyIcon1.ContextMenu = this.contextMenu1;
+            notifyIcon.ContextMenu = this.contextMenu;
 
             // The Text property sets the text that will be displayed,
             // in a tooltip, when the mouse hovers over the systray icon.
-            notifyIcon1.Text = "Pause";
-            notifyIcon1.Visible = true;
+            notifyIcon.Text = "Pause";
+            notifyIcon.Visible = true;
         }
 
         private void menuItem1_Click(object Sender, EventArgs e)
@@ -66,8 +80,7 @@ namespace PauseForms
             Application.Exit();
         }
 
-        int interval1 = 5;// 20 * 60;
-        int display1 = 3;//20;
+        Dictionary<int, Entry> timings = new Dictionary<int, Entry>();
 
         private void LoadSettings()
         {
@@ -76,20 +89,42 @@ namespace PauseForms
 
             using (var re = new System.IO.StreamReader("Settings.cfg"))
             {
-                while (!re.EndOfStream)
-                {
-                    var line = re.ReadLine().Split(new char[] { '=' });
-                    switch (line[0])
-                    {
-                        case "interval1":
-                            int.TryParse(line[1], out interval1);
-                            break;
+                var rx = new Regex(@"^([a-z]+)(\d+)=(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
-                        case "display1":
-                            int.TryParse(line[1], out display1);
-                            break;
-                        default:
-                            break;
+                var matches = rx.Matches(re.ReadToEnd());
+                if (matches.Count > 0)
+                    timings.Clear();
+
+                foreach (Match match in matches)
+                {
+                    var group = match.Groups;
+
+                    Debug.WriteLine($"Found group {group[0]}");
+
+                    // Get and validate index
+                    var index = -1;
+                    if (!int.TryParse(group[2].Value, out index))
+                    {
+                        continue;
+                    }
+
+                    // Add entry if non existant index
+                    if (!timings.ContainsKey(index))
+                    {
+                        timings.Add(index, new Entry());
+                    }
+
+                    // Fill entry
+                    if (int.TryParse(group[3].Value, out int result))
+                    {
+                        if (group[1].Value == "interval")
+                        {
+                            timings[index].Interval = result;
+                        }
+                        else if (group[1].Value == "display")
+                        {
+                            timings[index].Display = result;
+                        }
                     }
                 }
             }
@@ -97,46 +132,62 @@ namespace PauseForms
 
         private void StartSchedule()
         {
-            countDownTimer.Interval = 4;
+            countDownTimer.Interval = 16; // 25 FPS
             countDownTimer.Tick += CountDownTimer_Tick;
 
             scheduleTimer.Tick += ScheduleTimer_Tick;
-            scheduleTimer.Interval = interval1 * 1000;
+
+            scheduleTimer.Interval = 1000;
             scheduleTimer.Start();
         }
 
-        int currentTask = -1;
-        int totalDisplayTime = 0;
+        DateTime displayStartTime;
         DateTime displayEndTime;
+        int totalTime = 0;
+        readonly int margin = 100;
 
         private void ScheduleTimer_Tick(object sender, EventArgs e)
         {
-            currentTask++;
+            // Update time
+            totalTime++;
+            totalTime %= (365 * 24 * 60 * 60); // Limit to one year of seconds to prevent overflows
 
-            // Setup 
-            totalDisplayTime = display1;
+            // Get all entries that want to display
+            var toRun = timings.Values.Where(entry => totalTime % entry.Interval == 0);
+            if (toRun.Count() == 0)
+                return;
 
-            // Show window            
-            this.Left = Screen.PrimaryScreen.WorkingArea.Width - this.Width;
+            // Select longest running one
+            var maxDisplay = toRun.Max(entry => entry.Display);
+
+            // Update display time if needed
+            var newEndTime = DateTime.Now.AddSeconds(maxDisplay);
+            if (displayEndTime < newEndTime)
+                displayEndTime = newEndTime;
+
+            // Set and show window
+            this.Left = margin;
             this.Top = 30;
+            this.Width = Screen.PrimaryScreen.WorkingArea.Width - margin * 2;
+            this.Height = 50;
             this.Show();
 
             // Set tray icon
-            notifyIcon1.Icon = new Icon("Pause.ico");
+            notifyIcon.Icon = pauseIcon;
 
-            // Count down
-            displayEndTime = DateTime.Now.AddSeconds(totalDisplayTime);
-            countDownTimer.Start();
+            // Start count down
+            if (!countDownTimer.Enabled)
+            {
+                displayStartTime = DateTime.Now;
+                countDownTimer.Start();
+            }
         }
 
         private void CountDownTimer_Tick(object sender, EventArgs e)
         {
-            var deltaTime = (displayEndTime - DateTime.Now).TotalSeconds;
-            if (deltaTime > 0)
-                CountDown = deltaTime;
-            else
+            var remainder = (displayEndTime - DateTime.Now).TotalSeconds;
+            if (remainder <= 0)
             {
-                CountDown = 0;
                 FinishCountDown();
             }
             this.Invalidate();
@@ -146,21 +197,31 @@ namespace PauseForms
         {
             countDownTimer.Stop();
             this.Hide();
+
             // Set tray icon
-            notifyIcon1.Icon = new Icon("Play.ico");
+            notifyIcon.Icon = playIcon;
         }
 
         public double CountDown { get; set; }
 
-        Font drawFont = new Font(FontFamily.GenericMonospace.Name, 16);
-        SolidBrush drawBrush = new SolidBrush(Color.Black);
-
+        Font drawFont = new Font(FontFamily.GenericMonospace.Name, 24, FontStyle.Bold);
+        Brush foregroundBrush = new SolidBrush(Color.FromArgb(40,200,60));
+        Brush backgroundBrush = new SolidBrush(Color.FromArgb(40, 43, 42));
+        // Draw the progess bar
         private void Form1_Paint(object sender, PaintEventArgs e)
         {
             var w = this.Width;
             var h = this.Height;
-            e.Graphics.FillRectangle(Brushes.Green, new RectangleF(0, 0, (float)(CountDown / totalDisplayTime * w), h));
-            e.Graphics.DrawString(CountDown.ToString("0.0"), drawFont, drawBrush, 2, 2);
+
+            var remainder = (displayEndTime - DateTime.Now).TotalSeconds;
+            var total = (displayEndTime - displayStartTime).TotalSeconds;
+
+            e.Graphics.FillRectangle(backgroundBrush, new RectangleF(0, 0, w, h));
+            if (remainder > 0)
+            {
+                e.Graphics.FillRectangle(foregroundBrush, new RectangleF(1, 1, (float)(remainder / total * w) - 2, h - 2));
+                e.Graphics.DrawString(remainder.ToString("0.0"), drawFont, backgroundBrush, 2, 8);
+            }
         }
     }
 }
